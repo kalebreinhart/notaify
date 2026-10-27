@@ -1,0 +1,16 @@
+{
+  "name": "notaify",
+  "private": true,
+  "scripts": {
+    "types": "wrangler types",
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "wrangler": "^4.40.0"
+  },
+  "dependencies": {
+    "uqr": "^0.1.3"
+  }
+}

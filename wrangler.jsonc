@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "grok-attention",
+  "account_id": "5487dce4785d095bfccb12f1bf2d8537",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "notaify.com", "custom_domain": true },
+    { "pattern": "www.notaify.com", "custom_domain": true }
+  ],
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    { "type": "Text", "globs": ["**/*.py"], "fallthrough": true }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "AttentionHub" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AttentionHub"] }
+  ]
+}
