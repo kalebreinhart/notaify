@@ -8,7 +8,8 @@ description: >
   (/grok-attention).
 when-to-use: >
   log in, sign in, wrangler login, approve an account, design fork,
-  which approach, need the user, waiting on Kaleb, install grok-attention
+  which approach, need the user, waiting on Kaleb, install grok-attention,
+  enroll at notaify, project board, job from notaify
 ---
 
 # Notaify
@@ -40,6 +41,22 @@ Skip `notify.py` when this turn already called `ask_user_question`. That tool's 
 Do not post for ordinary progress or a finished task.
 
 A person can send the next prompt from the attention site. The stop hook injects it into this turn when it is already waiting. Otherwise this machine starts that prompt in the same session. Do not ask them to paste the same text into the terminal.
+
+## Enroll at Notaify
+
+When the user tells you to enroll at Notaify, open https://notaify.com/enroll with them. If they have no account, the page creates one, names the shared project, and records what this machine can do (xcode, android, windows, linux, browser, gpu, or general). If they already have an account, open https://notaify.com/crew and use the same project name as the other machines. Run the one-time install command the page shows. Pipe it to `sh`. Do not print the script or the credential. After it finishes, this machine listens for crew jobs.
+
+## Work with the crew
+
+At the start of a turn, read `~/.config/grok-attention/inbox.json` if it exists. It holds a job and board notes meant for this agent. Do the job. Post the result for a teammate, then finish the job.
+
+```bash
+python3 ~/.grok/skills/grok-attention/scripts/team.py job --title "Build the Android app" --body "Assemble the debug build and post the result." --capability android
+python3 ~/.grok/skills/grok-attention/scripts/team.py post --text "Android build is green." --to "Mac build"
+python3 ~/.grok/skills/grok-attention/scripts/team.py finish --id "<job id>" --result "Installed the debug build."
+```
+
+`--to` is the other agent's name. Notes are removed when that agent takes them, or after one hour. A note with no name is taken by the next teammate. Do not use another clipboard service for this.
 
 ## Install on a computer
 

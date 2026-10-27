@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { otpauthUri, passwordMatches, totpMatches } from "./crypto";
+import { base32Encode, hashPassword, otpauthUri, passwordMatches, totpMatches, bytesToBase64 } from "./crypto";
 import { installCommand, installScript } from "./installer";
 import { qrSvg } from "./qr";
 import { configuredProviders, providerById } from "./providers";
@@ -9,7 +9,11 @@ import {
   html,
   inboxPage,
   joinPage,
+  crewPage,
+  enrollPage,
+  enrollReadyPage,
   landingPage,
+  machineReadyPage,
   loginPage,
   machineLinkPage,
   machineLinkText,
@@ -104,6 +108,14 @@ type Access = "master" | "device" | "machine" | "pair" | "user" | "none";
 
 interface Principal {
   kind: Access;
+  userId: string;
+}
+
+interface CrewActor {
+  id: string;
+  projectId: string;
+  capabilities: string[];
+  name: string;
   userId: string;
 }
 
@@ -464,6 +476,48 @@ export class AttentionHub extends DurableObject<Env> {
       this.addColumn("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
       this.addColumn("ALTER TABLE events ADD COLUMN options TEXT");
       this.addColumn("ALTER TABLE sessions ADD COLUMN options TEXT");
+      this.addColumn("ALTER TABLE devices ADD COLUMN project_id TEXT");
+      this.addColumn("ALTER TABLE devices ADD COLUMN capabilities TEXT");
+      this.addColumn("ALTER TABLE pairing_codes ADD COLUMN project_id TEXT");
+      this.addColumn("ALTER TABLE pairing_codes ADD COLUMN capabilities TEXT");
+      this.addColumn("ALTER TABLE pairing_codes ADD COLUMN agent_name TEXT");
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          capability TEXT,
+          status TEXT NOT NULL,
+          claimed_by TEXT,
+          result TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS board_notes (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          author_id TEXT NOT NULL,
+          intended_id TEXT,
+          text TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          consumed_at TEXT,
+          consumed_by TEXT
+        )
+      `);
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS backup_codes (
           user_id TEXT NOT NULL,
@@ -591,6 +645,10 @@ export class AttentionHub extends DurableObject<Env> {
     try {
       const principal = await this.access(request);
       if (url.pathname === "/" && request.method === "GET") return this.home(principal);
+      if (url.pathname === "/enroll" && request.method === "GET") return enrollPage("");
+      if (url.pathname === "/enroll" && request.method === "POST") return this.enrollAccount(request);
+      if (url.pathname === "/crew" && request.method === "GET") return crewPage("");
+      if (url.pathname === "/crew" && request.method === "POST") return this.crewAccount(request, principal);
       if (url.pathname === "/login" && request.method === "GET") return loginPage({ failed: false, providers: this.providerLinks() });
       if (url.pathname === "/login" && request.method === "POST") return this.login(request, url);
       if (url.pathname === "/login/code" && request.method === "GET") return this.codeForm(request, false);
@@ -602,6 +660,16 @@ export class AttentionHub extends DurableObject<Env> {
       const oauthCallback = /^\/auth\/callback\/([a-z0-9_-]+)$/.exec(url.pathname);
       if (oauthCallback && request.method === "GET") return this.oauthCallback(request, oauthCallback[1], url);
       if (url.pathname === "/reply" && request.method === "POST") return this.postReply(request, principal);
+      if (url.pathname === "/v1/projects" && request.method === "GET") return this.listProjects(principal);
+      if (url.pathname === "/v1/projects" && request.method === "POST") return this.createProject(request, principal);
+      const projectJob = /^\/v1\/projects\/([A-Za-z0-9_-]{8,80})\/jobs$/.exec(url.pathname);
+      if (projectJob && request.method === "POST") return this.createJob(request, principal, projectJob[1]);
+      const projectMachine = /^\/v1\/projects\/([A-Za-z0-9_-]{8,80})\/machines$/.exec(url.pathname);
+      if (projectMachine && request.method === "POST") return this.addProjectMachine(request, principal, projectMachine[1]);
+      if (url.pathname === "/v1/jobs/claim" && request.method === "POST") return this.claimJob(request, principal);
+      if (url.pathname === "/v1/jobs/finish" && request.method === "POST") return this.finishJob(request, principal);
+      if (url.pathname === "/v1/board" && request.method === "POST") return this.postNote(request, principal);
+      if (url.pathname === "/v1/board/take" && request.method === "POST") return this.takeNotes(request, principal);
       if (url.pathname === "/v1/auth/methods" && request.method === "GET") return this.authMethods();
       if (url.pathname === "/v1/auth/login" && request.method === "POST") return this.loginJson(request);
       if (url.pathname === "/v1/auth/code" && request.method === "POST") return this.loginCodeJson(request);
@@ -992,6 +1060,399 @@ export class AttentionHub extends DurableObject<Env> {
     return json({ ok: true });
   }
 
+  private pairingMeta(code: string): { project_id: string; capabilities: string; agent_name: string } {
+    const rows = this.ctx.storage.sql
+      .exec<{ project_id: string | null; capabilities: string | null; agent_name: string | null } & Record<string, SqlStorageValue>>(
+        "SELECT project_id, capabilities, agent_name FROM pairing_codes WHERE code = ?",
+        code,
+      )
+      .toArray();
+    return {
+      project_id: rows[0]?.project_id ?? "",
+      capabilities: rows[0]?.capabilities ?? "[]",
+      agent_name: rows[0]?.agent_name ?? "",
+    };
+  }
+
+  private async enrollAccount(request: Request): Promise<Response> {
+    const raw = await request.text();
+    if (raw.length > 8_000) return enrollPage("That form was too large.");
+    const form = new URLSearchParams(raw);
+    const email = (form.get("email") ?? "").trim().toLowerCase();
+    const password = form.get("password") ?? "";
+    const projectName = clip(form.get("project"), 80);
+    const goal = clip(form.get("goal"), 240) || "Work together on this project.";
+    const agentName = clip(form.get("agent"), 80);
+    const capabilities = form.getAll("capability").map((item) => item.trim()).filter(Boolean).slice(0, 8);
+    if (!email || password.length < 8 || !projectName || !agentName) return enrollPage("Email, a password of 8 or more characters, a project, and an agent name are required.");
+    const existing = this.ctx.storage.sql.exec<IdRow>("SELECT id FROM users WHERE email = ?", email).toArray();
+    if (existing.length > 0) return enrollPage("That email already has an account. Sign in, then add the machine from Crew.");
+    const userId = `usr_${randomToken(12)}`;
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const passwordHash = await hashPassword(password, salt);
+    const totpSecret = base32Encode(crypto.getRandomValues(new Uint8Array(20)));
+    const now = new Date().toISOString();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO users (id, email, password_salt, password_hash, totp_secret, created_at, credential_tag, totp_confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+      userId,
+      email,
+      bytesToBase64(salt),
+      bytesToBase64(passwordHash),
+      totpSecret,
+      now,
+      "signup",
+    );
+    const backups = [randomToken(6), randomToken(6), randomToken(6), randomToken(6)].map((item) => item.slice(0, 8).toLowerCase());
+    for (const code of backups) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO backup_codes (user_id, code_hash, used_at) VALUES (?, ?, NULL)",
+        userId,
+        await sha256Hex(code),
+      );
+    }
+    const projectId = `prj_${randomToken(8)}`;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO projects (id, user_id, name, goal, created_at) VALUES (?, ?, ?, ?, ?)",
+      projectId,
+      userId,
+      projectName,
+      goal,
+      now,
+    );
+    const minted = this.mintProjectMachine(userId, projectId, agentName, cleanCapabilities(capabilities));
+    const code = minted.code;
+    const origin = new URL(request.url).origin;
+    return enrollReadyPage({
+      email,
+      project: projectName,
+      command: installCommand(origin, code),
+      qr: qrSvg(otpauthUri(email, totpSecret)),
+      secret: totpSecret,
+      backups,
+    });
+  }
+
+  private listProjects(principal: Principal): Response {
+    if (!canRead(principal) && principal.kind !== "machine") return json({ error: "unauthorized" }, 401);
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; name: string; goal: string; created_at: string } & Record<string, SqlStorageValue>>(
+        "SELECT id, name, goal, created_at FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+        principal.userId,
+      )
+      .toArray();
+    return json({ projects: rows });
+  }
+
+  private async createProject(request: Request, principal: Principal): Promise<Response> {
+    if (principal.kind !== "user" && principal.kind !== "master") return json({ error: "unauthorized" }, 401);
+    const raw = await request.text();
+    let name = "";
+    let goal = "";
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      name = clip(parsed.name, 80);
+      goal = clip(parsed.goal, 240);
+    } catch {
+      return json({ error: "invalid JSON" }, 400);
+    }
+    if (!name) return json({ error: "name is required" }, 400);
+    const id = `prj_${randomToken(8)}`;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO projects (id, user_id, name, goal, created_at) VALUES (?, ?, ?, ?, ?)",
+      id,
+      principal.userId,
+      name,
+      goal || "Work together on this project.",
+      new Date().toISOString(),
+    );
+    return json({ ok: true, id, name });
+  }
+
+  private async createJob(request: Request, principal: Principal, projectId: string): Promise<Response> {
+    if (principal.kind !== "user" && principal.kind !== "master" && principal.kind !== "machine") return json({ error: "unauthorized" }, 401);
+    const raw = await request.text();
+    let title = "";
+    let body = "";
+    let capability = "";
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      title = clip(parsed.title, 140);
+      body = clip(parsed.body, 2000);
+      capability = jobCapability(parsed.capability);
+    } catch {
+      return json({ error: "invalid JSON" }, 400);
+    }
+    if (!title || !body) return json({ error: "title and body are required" }, 400);
+    const owned = this.ctx.storage.sql
+      .exec<IdRow>("SELECT id FROM projects WHERE id = ? AND user_id = ?", projectId, principal.userId)
+      .toArray();
+    if (!owned.length) return json({ error: "not found" }, 404);
+    const id = `job_${randomToken(8)}`;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO jobs (id, project_id, user_id, title, body, capability, status, claimed_by, result, created_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, ?, NULL)",
+      id,
+      projectId,
+      principal.userId,
+      title,
+      body,
+      capability,
+      new Date().toISOString(),
+    );
+    return json({ ok: true, id });
+  }
+
+  private async crewAccount(request: Request, principal: Principal): Promise<Response> {
+    if (principal.kind !== "user" && principal.kind !== "master") {
+      return new Response(null, { status: 303, headers: { Location: "/login" } });
+    }
+    const raw = await request.text();
+    if (raw.length > 8_000) return crewPage("That form was too large.");
+    const form = new URLSearchParams(raw);
+    const projectName = clip(form.get("project"), 80);
+    const goal = clip(form.get("goal"), 240);
+    const agentName = clip(form.get("agent"), 80);
+    const capabilities = cleanCapabilities(form.getAll("capability"));
+    if (!projectName || !agentName) return crewPage("A project name and an agent name are required.");
+    const projectId = this.findOrCreateProject(principal.userId, projectName, goal);
+    const minted = this.mintProjectMachine(principal.userId, projectId, agentName, capabilities);
+    return machineReadyPage({
+      project: projectName,
+      agent: agentName,
+      command: installCommand(new URL(request.url).origin, minted.code),
+    });
+  }
+
+  private async addProjectMachine(request: Request, principal: Principal, projectId: string): Promise<Response> {
+    if (principal.kind !== "user" && principal.kind !== "master" && principal.kind !== "machine") return json({ error: "unauthorized" }, 401);
+    const parsed = await readJson(request);
+    if (!parsed) return json({ error: "invalid JSON" }, 400);
+    const agentName = clip(parsed.agent, 80);
+    const capabilities = cleanCapabilities(Array.isArray(parsed.capabilities) ? parsed.capabilities.filter((item) => typeof item === "string") : []);
+    if (!agentName) return json({ error: "agent is required" }, 400);
+    const owned = this.ctx.storage.sql
+      .exec<IdRow>("SELECT id FROM projects WHERE id = ? AND user_id = ?", projectId, principal.userId)
+      .toArray();
+    if (!owned.length) return json({ error: "not found" }, 404);
+    const minted = this.mintProjectMachine(principal.userId, projectId, agentName, capabilities);
+    return json({
+      ok: true,
+      command: installCommand(new URL(request.url).origin, minted.code),
+      expires_at: minted.expiresAt,
+    });
+  }
+
+  private findOrCreateProject(userId: string, name: string, goal: string): string {
+    const existing = this.ctx.storage.sql
+      .exec<IdRow>("SELECT id FROM projects WHERE user_id = ? AND name = ? ORDER BY created_at ASC LIMIT 1", userId, name)
+      .toArray();
+    if (existing[0]?.id) return existing[0].id;
+    const id = `prj_${randomToken(8)}`;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO projects (id, user_id, name, goal, created_at) VALUES (?, ?, ?, ?, ?)",
+      id,
+      userId,
+      name,
+      goal || "Work together on this project.",
+      new Date().toISOString(),
+    );
+    return id;
+  }
+
+  private mintProjectMachine(userId: string, projectId: string, agentName: string, capabilities: string[]): { code: string; expiresAt: string } {
+    const code = randomToken(18);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO pairing_codes (code, expires_at, used_at, kind, user_id, project_id, capabilities, agent_name) VALUES (?, ?, NULL, 'machine', ?, ?, ?, ?)",
+      code,
+      expiresAt,
+      userId,
+      projectId,
+      JSON.stringify(capabilities),
+      agentName,
+    );
+    return { code, expiresAt };
+  }
+
+  private async claimJob(request: Request, principal: Principal): Promise<Response> {
+    const parsed = await readJson(request);
+    if (!parsed) return json({ error: "invalid JSON" }, 400);
+    const crew = await this.crewActor(request, principal, parsed);
+    if (!crew) return json({ error: "unauthorized" }, 401);
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; title: string; body: string; capability: string | null } & Record<string, SqlStorageValue>>(
+        "SELECT id, title, body, capability FROM jobs WHERE project_id = ? AND status = 'open' ORDER BY created_at ASC LIMIT 20",
+        crew.projectId,
+      )
+      .toArray();
+    for (const job of rows) {
+      if (job.capability && !crew.capabilities.includes(job.capability)) continue;
+      const claimed = this.ctx.storage.sql.exec(
+        "UPDATE jobs SET status = 'claimed', claimed_by = ?, finished_at = NULL WHERE id = ? AND status = 'open'",
+        crew.id,
+        job.id,
+      );
+      if (claimed.rowsWritten !== 1) continue;
+      return json({ job: { id: job.id, title: job.title, body: job.body, capability: job.capability ?? "" } });
+    }
+    return json({ job: null });
+  }
+
+  private async finishJob(request: Request, principal: Principal): Promise<Response> {
+    const parsed = await readJson(request);
+    if (!parsed) return json({ error: "invalid JSON" }, 400);
+    const crew = await this.crewActor(request, principal, parsed);
+    if (!crew) return json({ error: "unauthorized" }, 401);
+    const id = clip(parsed.id, 80);
+    const result = clip(parsed.result, 2000);
+    const updated = this.ctx.storage.sql.exec(
+      "UPDATE jobs SET status = 'done', result = ?, finished_at = ? WHERE id = ? AND claimed_by = ? AND status = 'claimed'",
+      result,
+      new Date().toISOString(),
+      id,
+      crew.id,
+    );
+    if (updated.rowsWritten !== 1) return json({ error: "not found" }, 404);
+    return json({ ok: true });
+  }
+
+  private async postNote(request: Request, principal: Principal): Promise<Response> {
+    if (principal.kind === "none" || principal.kind === "pair" || principal.kind === "device") return json({ error: "unauthorized" }, 401);
+    const parsed = await readJson(request);
+    if (!parsed) return json({ error: "invalid JSON" }, 400);
+    const projectId = clip(parsed.project_id, 80);
+    const textBody = clip(parsed.text, 4000);
+    const intended = clip(parsed.to, 80);
+    if (!projectId || !textBody) return json({ error: "project_id and text are required" }, 400);
+    const owned = this.ctx.storage.sql
+      .exec<IdRow>("SELECT id FROM projects WHERE id = ? AND user_id = ?", projectId, principal.userId)
+      .toArray();
+    if (!owned.length) return json({ error: "not found" }, 404);
+    this.purgeBoard();
+    const now = new Date();
+    const id = `note_${randomToken(8)}`;
+    const device = await this.machineDevice(request);
+    const agent = clip(parsed.agent, 80);
+    const author = device?.id || (agent ? `name:${agent}` : principal.userId);
+    const expiresAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO board_notes (id, project_id, author_id, intended_id, text, created_at, expires_at, consumed_at, consumed_by) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+      id,
+      projectId,
+      author,
+      intended,
+      textBody,
+      now.toISOString(),
+      expiresAt,
+    );
+    await this.schedulePurge();
+    return json({ ok: true, id, expires_at: expiresAt });
+  }
+
+  private async takeNotes(request: Request, principal: Principal): Promise<Response> {
+    const parsed = await readJson(request);
+    if (!parsed) return json({ error: "invalid JSON" }, 400);
+    const crew = await this.crewActor(request, principal, parsed);
+    if (!crew) return json({ error: "unauthorized" }, 401);
+    this.purgeBoard();
+    const selfName = `name:${crew.name}`;
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; author_id: string; text: string } & Record<string, SqlStorageValue>>(
+        `SELECT id, author_id, text FROM board_notes
+         WHERE project_id = ? AND consumed_at IS NULL AND expires_at > ?
+           AND author_id != ? AND author_id != ?
+           AND (intended_id IS NULL OR intended_id = '' OR intended_id = ? OR intended_id = ? OR intended_id = ?)
+         ORDER BY created_at ASC LIMIT 20`,
+        crew.projectId,
+        new Date().toISOString(),
+        crew.id,
+        selfName,
+        crew.id,
+        crew.name,
+        selfName,
+      )
+      .toArray();
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.ctx.storage.sql.exec(
+        "UPDATE board_notes SET consumed_at = ?, consumed_by = ? WHERE id = ? AND consumed_at IS NULL",
+        now,
+        crew.id,
+        row.id,
+      );
+    }
+    this.purgeBoard();
+    return json({
+      notes: rows.map((row) => ({ id: row.id, author_id: row.author_id, text: row.text })),
+    });
+  }
+
+  private purgeBoard(): void {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM board_notes WHERE expires_at <= ? OR consumed_at IS NOT NULL",
+      new Date().toISOString(),
+    );
+  }
+
+  async alarm(): Promise<void> {
+    this.purgeBoard();
+    await this.schedulePurge();
+  }
+
+  private async schedulePurge(): Promise<void> {
+    const rows = this.ctx.storage.sql
+      .exec<{ expires_at: string } & Record<string, SqlStorageValue>>(
+        "SELECT expires_at FROM board_notes WHERE consumed_at IS NULL ORDER BY expires_at ASC LIMIT 1",
+      )
+      .toArray();
+    const when = rows[0] ? Date.parse(rows[0].expires_at) : Number.NaN;
+    if (!Number.isFinite(when)) return;
+    await this.ctx.storage.setAlarm(Math.max(when, Date.now() + 1000));
+  }
+
+  private async crewActor(request: Request, principal: Principal, parsed: Record<string, unknown>): Promise<CrewActor | null> {
+    const device = await this.machineDevice(request);
+    if (device?.project_id && device.user_id) {
+      return {
+        id: device.id,
+        projectId: device.project_id,
+        capabilities: parseStringList(device.capabilities),
+        name: device.name,
+        userId: device.user_id,
+      };
+    }
+    if (presentedToken(request).startsWith("gam_") || presentedToken(request).startsWith("gat_")) return null;
+    if (principal.kind !== "master" && principal.kind !== "user") return null;
+    const projectId = clip(parsed.project_id, 80);
+    const agent = clip(parsed.agent, 80);
+    if (!projectId || !agent) return null;
+    const owned = this.ctx.storage.sql
+      .exec<IdRow>("SELECT id FROM projects WHERE id = ? AND user_id = ?", projectId, principal.userId)
+      .toArray();
+    if (!owned.length) return null;
+    const capabilities = cleanCapabilities(Array.isArray(parsed.capabilities) ? parsed.capabilities.filter((item) => typeof item === "string") : []);
+    return { id: `name:${agent}`, projectId, capabilities, name: agent, userId: principal.userId };
+  }
+
+  private async machineDevice(request: Request): Promise<{ id: string; name: string; project_id: string; capabilities: string; user_id: string } | null> {
+    const presented = presentedToken(request);
+    if (!presented.startsWith("gam_")) return null;
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; name: string; project_id: string | null; capabilities: string | null; user_id: string | null } & Record<string, SqlStorageValue>>(
+        "SELECT id, name, project_id, capabilities, user_id FROM devices WHERE token_hash = ? AND revoked_at IS NULL AND role = 'publisher'",
+        await sha256Hex(presented),
+      )
+      .toArray();
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      name: row.name,
+      project_id: row.project_id ?? "",
+      capabilities: row.capabilities ?? "[]",
+      user_id: row.user_id ?? "",
+    };
+  }
+
   private machinePage(request: Request, code: string, origin: string): Response {
     const live = this.machineCode(code);
     const command = installCommand(origin, code);
@@ -1022,15 +1483,33 @@ export class AttentionHub extends DurableObject<Env> {
     );
     const id = crypto.randomUUID();
     const machineToken = `gam_${randomToken(32)}`;
+    const meta = this.pairingMeta(code);
     this.ctx.storage.sql.exec(
-      "INSERT INTO devices (id, name, token_hash, created_at, revoked_at, role, user_id, host) VALUES (?, ?, ?, ?, NULL, 'publisher', ?, NULL)",
+      "INSERT INTO devices (id, name, token_hash, created_at, revoked_at, role, user_id, host, project_id, capabilities) VALUES (?, ?, ?, ?, NULL, 'publisher', ?, NULL, ?, ?)",
       id,
-      "Grok machine",
+      meta.agent_name || "Agent",
       await sha256Hex(machineToken),
       now,
       this.codeUser(code),
+      meta.project_id,
+      meta.capabilities,
     );
-    return text(installScript({ url: origin, token: machineToken }));
+    let capabilities: string[] = [];
+    try {
+      const parsed = JSON.parse(meta.capabilities || "[]") as unknown;
+      if (Array.isArray(parsed)) capabilities = parsed.filter((item) => typeof item === "string") as string[];
+    } catch {
+      capabilities = [];
+    }
+    return text(
+      installScript({
+        url: origin,
+        token: machineToken,
+        project_id: meta.project_id || undefined,
+        agent_name: meta.agent_name || undefined,
+        capabilities,
+      }),
+    );
   }
 
   private machineCode(code: string): CodeRow | null {
@@ -1821,6 +2300,8 @@ function canReply(principal: Principal): boolean {
 function isHubPath(pathname: string): boolean {
   return (
     pathname === "/" ||
+    pathname === "/enroll" ||
+    pathname === "/crew" ||
     pathname === "/login" ||
     pathname === "/login/code" ||
     pathname === "/login/show-code" ||
@@ -1836,6 +2317,13 @@ function isHubPath(pathname: string): boolean {
     pathname === "/v1/pairings/current" ||
     pathname === "/v1/devices" ||
     pathname === "/v1/machine" ||
+    pathname === "/v1/projects" ||
+    pathname === "/v1/jobs/claim" ||
+    pathname === "/v1/jobs/finish" ||
+    pathname === "/v1/board" ||
+    pathname === "/v1/board/take" ||
+    /^\/v1\/projects\/[A-Za-z0-9_-]{8,80}\/jobs$/.test(pathname) ||
+    /^\/v1\/projects\/[A-Za-z0-9_-]{8,80}\/machines$/.test(pathname) ||
     pathname === "/v1/auth/methods" ||
     pathname === "/v1/auth/login" ||
     pathname === "/v1/auth/code" ||
@@ -1880,6 +2368,46 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+const CAPABILITIES = new Set(["xcode", "android", "windows", "linux", "browser", "gpu", "general"]);
+
+function cleanCapabilities(values: string[]): string[] {
+  const out: string[] = [];
+  for (const value of values) {
+    const item = value.trim().toLowerCase();
+    if (!CAPABILITIES.has(item) || out.includes(item)) continue;
+    out.push(item);
+  }
+  return out.length ? out : ["general"];
+}
+
+function jobCapability(value: unknown): string {
+  const item = clip(value, 40).toLowerCase();
+  return CAPABILITIES.has(item) ? item : "";
+}
+
+async function readJson(request: Request): Promise<Record<string, unknown> | null> {
+  const raw = await request.text();
+  if (raw.length > 16_000) return null;
+  if (!raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseStringList(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => typeof item === "string") as string[];
+  } catch {
+    return [];
+  }
+}
+
 function cleanName(value: unknown): string {
   const text = clip(typeof value === "string" ? value : "Mac", 80).replace(/[\u0000-\u001f]/g, "").trim();
   return text || "Mac";
@@ -1896,6 +2424,8 @@ export default {
     if (request.method === "OPTIONS") return json({ ok: true });
     const url = new URL(request.url);
     if (url.pathname === "/v1/health") return json({ ok: true });
+    if (url.pathname === "/enroll" && request.method === "GET") return enrollPage("");
+    if (url.pathname === "/crew" && request.method === "GET") return crewPage("");
     if (url.pathname === "/login" && request.method === "GET") {
       return loginPage({
         failed: false,
@@ -1905,7 +2435,7 @@ export default {
     if (!isHubPath(url.pathname)) return json({ error: "not found" }, 404);
     if (!env.ATTENTION_TOKEN) return json({ error: "token is not configured" }, 500);
     try {
-      const stub = env.HUB.getByName("notaify-choices");
+      const stub = env.HUB.getByName("notaify-crew");
       const response = await stub.fetch(request);
       if (url.pathname === "/" && response.status === 303 && (response.headers.get("Location") ?? "").startsWith("/login")) {
         return landingPage();

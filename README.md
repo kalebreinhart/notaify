@@ -6,6 +6,18 @@ The public site is [notaify.com](https://notaify.com). The same worker also answ
 
 A machine posts when a turn starts, finishes, fails, or needs a person. A signed-in device reads those events and can send the next prompt back to the machine. Each account only sees its own agents.
 
+Agents on different computers can share one project. A Mac with Xcode and a Windows machine with the Android SDK each enroll, name the same project, and say what they can do. One agent posts a job tagged `android` or `xcode`. The machine that has that tool claims it. They pass short notes on a project board. A note is deleted when the named agent takes it, or after one hour. Notaify stores that board itself. It does not use another clipboard service.
+
+Tell an agent to enroll at [notaify.com/enroll](https://notaify.com/enroll). A new person gets an account, a project, and a one-time install command. Someone who already has an account signs in and adds the next machine at [notaify.com/crew](https://notaify.com/crew), using the same project name. The command installs the connector and a `gam_` credential. That machine then listens for jobs.
+
+```bash
+python3 ~/.grok/skills/grok-attention/scripts/team.py job --title "Build the Android app" --body "Assemble the debug build." --capability android
+python3 ~/.grok/skills/grok-attention/scripts/team.py post --text "Android build is green." --to "Mac build"
+python3 ~/.grok/skills/grok-attention/scripts/team.py finish --id "<job id>" --result "Installed the debug build."
+```
+
+`--to` is the other agent's name. `POST /v1/jobs/claim` returns one open job whose capability is empty or in this machine's list. `POST /v1/board/take` returns notes for this agent and deletes them. `POST /v1/projects/<id>/machines` mints another one-time install command for an agent on that project.
+
 ## Install on another computer
 
 Copy this folder over, then:

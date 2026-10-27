@@ -28,7 +28,7 @@ def log(message: str) -> None:
         return
 
 
-def load_config() -> dict[str, str] | None:
+def load_config() -> dict[str, Any] | None:
     path = config_dir() / "config.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -41,11 +41,45 @@ def load_config() -> dict[str, str] | None:
     host = raw.get("host")
     if not isinstance(url, str) or not isinstance(token, str) or not url or not token:
         return None
-    return {
+    record: dict[str, Any] = {
         "url": url.rstrip("/"),
         "token": token,
         "host": host if isinstance(host, str) and host else "",
     }
+    project_id = raw.get("project_id")
+    agent_name = raw.get("agent_name")
+    capabilities = raw.get("capabilities")
+    if isinstance(project_id, str) and project_id:
+        record["project_id"] = project_id
+    if isinstance(agent_name, str) and agent_name:
+        record["agent_name"] = agent_name
+    if isinstance(capabilities, list):
+        record["capabilities"] = [item for item in capabilities if isinstance(item, str)]
+    return record
+
+
+def api(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    config = load_config()
+    if config is None:
+        return None
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        config["url"] + path,
+        data=data,
+        method="POST" if payload is not None else "GET",
+        headers={
+            "Authorization": "Bearer " + config["token"],
+            "Content-Type": "application/json",
+            "User-Agent": "grok-attention/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        log(f"api failed {path}")
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def claim_reply(host: str) -> dict[str, str] | None:
