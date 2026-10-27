@@ -3,3 +3,5 @@ node_modules/
 .dev.vars
 worker-configuration.d.ts
 *.log
+__pycache__/
+*.pyc
