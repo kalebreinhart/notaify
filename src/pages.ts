@@ -16,41 +16,71 @@ function page(title: string, body: string): string {
 <title>${escapeHtml(title)}</title>
 <!-- pairing-ui -->
 <style>
-  :root { color-scheme: light; }
-  body { margin: 0; min-height: 100vh; background: #e6e0d4; color: #1c1915; font: 17px/1.45 Georgia, "Iowan Old Style", serif; }
-  .wrap { max-width: 40rem; margin: 0 auto; padding: 2.5rem 1.1rem 4rem; }
-  .brand { display: flex; align-items: center; gap: 0.55rem; font-size: 0.95rem; letter-spacing: 0.04em; margin-bottom: 1.4rem; }
-  .mark { width: 1.7rem; height: 1.7rem; border-radius: 8px; background: #1c1915; color: #f4efe6; display: grid; place-items: center; font-family: ui-sans-serif, system-ui, sans-serif; }
-  h1 { font-size: 2rem; font-weight: 500; letter-spacing: -0.03em; margin: 0 0 0.35rem; }
-  h2 { font-size: 1.25rem; font-weight: 500; margin: 1.6rem 0 0.4rem; }
-  p { margin: 0.4rem 0; }
-  .card { background: #fbf8f3; border: 1px solid #ddd4c6; border-radius: 18px; padding: 1.2rem; box-shadow: 0 18px 40px rgba(60, 40, 10, 0.06); }
-  form { display: grid; gap: 0.75rem; margin: 0.8rem 0 0; }
-  label { display: grid; gap: 0.35rem; font-size: 0.95rem; }
+  :root {
+    color-scheme: light;
+    --ink: #10231c;
+    --paper: #f3efe4;
+    --card: #fffdf8;
+    --line: #e4dccb;
+    --signal: #e36a12;
+    --muted: #5c675f;
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(820px 380px at 0% -10%, #ffe3c2 0%, transparent 60%),
+      var(--paper);
+    font: 16px/1.5 ui-sans-serif, system-ui, sans-serif;
+  }
+  .wrap { max-width: 42rem; margin: 0 auto; padding: 1.6rem 1.15rem 4rem; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.6rem; text-decoration: none; color: inherit; }
+  .brand .name { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 1.35rem; letter-spacing: -0.03em; }
+  .mark { width: 2rem; height: 2rem; border-radius: 10px; background: var(--ink); color: #f6f1e6; display: grid; place-items: center; font-weight: 650; position: relative; }
+  .mark::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 99px; background: var(--signal); box-shadow: 0 0 0 2px var(--ink); }
+  h1, h2 { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-weight: 500; letter-spacing: -0.03em; }
+  h1 { font-size: clamp(2.1rem, 6vw, 3.4rem); line-height: 1.02; margin: 0 0 0.6rem; }
+  h2 { font-size: 1.35rem; margin: 0 0 0.35rem; }
+  p { margin: 0.35rem 0; }
+  .lede { font-size: 1.15rem; max-width: 36rem; color: var(--ink); }
+  .eyebrow { text-transform: uppercase; letter-spacing: 0.14em; font-size: 0.72rem; color: var(--signal); font-weight: 700; }
+  .card, .session { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 1.15rem 1.15rem 1.25rem; box-shadow: 0 18px 50px rgba(16, 35, 28, 0.06); }
+  .points { display: grid; gap: 0.7rem; margin: 1.6rem 0 0; padding: 0; list-style: none; }
+  .points li { display: block; padding: 0.95rem 1rem; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,253,248,0.7); }
+  form { display: grid; gap: 0.75rem; margin: 0.9rem 0 0; }
+  label { display: grid; gap: 0.35rem; font-size: 0.92rem; }
   label.check { display: flex; align-items: center; gap: 0.5rem; }
   input, button, a.button { font: inherit; }
-  input[type="text"], input[type="email"], input[type="password"] { padding: 0.75rem 0.85rem; border-radius: 12px; border: 1px solid #cfc6b8; background: #fff; }
-  button, a.button { display: inline-block; width: fit-content; background: #1c1915; color: #fbf8f3; text-decoration: none; border: 0; border-radius: 999px; padding: 0.7rem 1.15rem; cursor: pointer; }
-  .qr, .qr-frame { width: min(100%, 260px); margin: 0.4rem auto; }
+  input[type="text"], input[type="email"], input[type="password"] { padding: 0.8rem 0.9rem; border-radius: 12px; border: 1px solid #d9d0c0; background: #fff; color: var(--ink); }
+  button, a.button { display: inline-block; width: fit-content; background: var(--ink); color: #f6f1e6; text-decoration: none; border: 0; border-radius: 999px; padding: 0.75rem 1.2rem; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .nav { display: flex; gap: 0.9rem; align-items: center; margin: 0 0 1rem; color: var(--muted); }
+  .session { margin: 0.8rem 0; }
+  .session .top { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; }
+  .pill { font-size: 0.75rem; letter-spacing: 0.04em; border-radius: 999px; padding: 0.2rem 0.55rem; background: #efe7da; }
+  .pill.waiting { background: #ffe0c2; color: #8a3d09; }
+  .pill.working { background: #d9efe3; color: #145c38; }
+  .pill.failed { background: #f8d4d0; color: #8d2418; }
+  .summary { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 1.2rem; line-height: 1.35; margin: 0.7rem 0; }
+  .qr, .qr-frame { width: min(100%, 240px); margin: 0.5rem auto; }
   .qr svg, .qr-frame svg { width: 100%; height: auto; display: block; background: #fff; }
-  .qr-frame { padding: 14px; background: #fff; border-radius: 20px; border: 1px solid #e4dccd; }
+  .qr-frame { padding: 14px; background: #fff; border-radius: 22px; border: 1px solid var(--line); }
   .steps { display: grid; gap: 1.1rem; }
   .step { display: grid; grid-template-columns: auto 1fr; gap: 0.8rem; align-items: start; }
-  .num { width: 1.8rem; height: 1.8rem; border-radius: 999px; background: #1c1915; color: #fbf8f3; display: grid; place-items: center; font-size: 0.9rem; }
-  .code-input { font-size: 1.7rem; letter-spacing: 0.32em; text-align: center; font-variant-numeric: tabular-nums; }
-  .banner { background: #f4dfd0; border-radius: 12px; padding: 0.75rem 0.9rem; }
-  .key { font-family: ui-monospace, monospace; letter-spacing: 0.08em; font-size: 1rem; }
-  code, .code, pre { font-family: ui-monospace, monospace; word-break: break-all; white-space: pre-wrap; }
-  ul { padding: 0; list-style: none; }
-  li { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 0.7rem 0; border-top: 1px solid #e4dccd; }
-  .muted { color: #5e564c; }
-  details { margin-top: 0.4rem; }
-  a { color: #1c1915; }
+  .num { width: 1.8rem; height: 1.8rem; border-radius: 99px; background: var(--ink); color: #f6f1e6; display: grid; place-items: center; font-size: 0.85rem; }
+  .code-input { font-size: 1.7rem; letter-spacing: 0.28em; text-align: center; }
+  .banner { background: #ffe0c2; border-radius: 12px; padding: 0.75rem 0.9rem; }
+  .key, code, .code, pre { font-family: ui-monospace, monospace; word-break: break-all; white-space: pre-wrap; }
+  ul.devices { padding: 0; list-style: none; }
+  ul.devices li { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 0.75rem 0; border-top: 1px solid var(--line); }
+  .muted { color: var(--muted); }
+  a { color: var(--ink); }
 </style>
 </head>
 <body>
 <div class="wrap">
-<header class="brand"><span class="mark">N</span><span>Notaify</span></header>
+<a class="brand" href="/"><span class="mark">N</span><span class="name">Notaify</span></a>
 ${body}
 </div>
 </body>
@@ -105,7 +135,7 @@ export function pairPage(input: {
   devices: DeviceRowView[];
 }): Response {
   const devices = input.devices.length
-    ? `<ul>${input.devices
+    ? `<ul class="devices">${input.devices
         .map((device) => {
           const kind = device.role === "publisher" ? "machine" : "Mac";
           return `<li><span>${escapeHtml(device.name)} <span class="muted">${kind} ${escapeHtml(device.created_at)}</span></span>
@@ -116,13 +146,13 @@ export function pairPage(input: {
   return html(
     page(
       "Pair a device",
-      `<h1>Pair a Mac</h1>
-<p>Scan this with the Mac app. The code works once and then expires. Opening it in a browser does not enroll the phone.</p>
+      `<h1>Pair a phone</h1>
+<p>Scan this with the Notaify app on iPhone or Android. The code works once. Opening it in a browser does not enroll the phone.</p>
 <div class="qr">${input.qr}</div>
 <p class="code">${escapeHtml(input.payload)}</p>
 <p class="muted">Expires <time datetime="${escapeHtml(input.expiresAt)}">${escapeHtml(input.expiresAt)}</time>. <a href="/pair?new=1">New QR code</a></p>
-<h2>Add a Grok machine</h2>
-<p>Open this link on the other computer, or paste it to Grok there. It installs the skill and pairs that machine. The link works once.</p>
+<h2>Add an agent machine</h2>
+<p>Open this link on the computer that runs the agent, or paste it to the agent there. It installs the Notaify hook and pairs that machine. The link works once.</p>
 <p class="code">${escapeHtml(input.machineUrl)}</p>
 <pre>${escapeHtml(input.machineCommand)}</pre>
 <p class="muted">Expires <time datetime="${escapeHtml(input.machineExpiresAt)}">${escapeHtml(input.machineExpiresAt)}</time>. <a href="/pair?new_machine=1">New machine link</a></p>
@@ -173,9 +203,9 @@ export function machineLinkPage(input: { command: string; expiresAt: string; liv
   }
   return html(
     page(
-      "Install grok-attention",
-      `<h1>Install grok-attention</h1>
-<p>On this computer, run the command below. It installs the skill, the hooks, and this machine's credential. Do not print the script. Opening this page does not install anything.</p>
+      "Add this machine to Notaify",
+      `<h1>Add this machine</h1>
+<p>Run the command below. It connects this computer to Notaify and installs the hook. Do not print the script. Opening this page does not install anything.</p>
 <pre>${escapeHtml(input.command)}</pre>
 <p class="muted">Expires <time datetime="${escapeHtml(input.expiresAt)}">${escapeHtml(input.expiresAt)}</time></p>`,
     ),
@@ -192,6 +222,23 @@ Expires ${input.expiresAt}
 
 ${input.command}
 `;
+}
+
+export function landingPage(): Response {
+  return html(
+    page(
+      "Notaify",
+      `<p class="eyebrow">For people who run agents</p>
+<h1>Know when it's your turn.</h1>
+<p class="lede">Notaify tells you the moment an agent finishes, or stops and waits for you. Any agent. iPhone, Android, and the web.</p>
+<p><a class="button" href="/login">Sign in</a></p>
+<ul class="points">
+  <li><strong>Finished.</strong> The turn is over. Read the short summary, not the whole log.</li>
+  <li><strong>Waiting.</strong> It needs a login, a choice, or your next prompt.</li>
+  <li><strong>Any device.</strong> The same account follows you from the desk to your phone.</li>
+</ul>`,
+    ),
+  );
 }
 
 export function loginPage(input: { failed: boolean; providers: { id: string; label: string }[] }): Response {
@@ -269,32 +316,44 @@ export interface InboxSession {
   workspace: string;
   state: string;
   title: string;
+  summary?: string;
+}
+
+function pill(state: string): string {
+  const label =
+    state === "needs_user" ? "Waiting" :
+    state === "running" ? "Working" :
+    state === "failed" ? "Failed" :
+    state === "ended" ? "Closed" :
+    "Finished";
+  const tone = state === "needs_user" ? "waiting" : state === "running" ? "working" : state === "failed" ? "failed" : "";
+  return `<span class="pill ${tone}">${label}</span>`;
 }
 
 export function inboxPage(input: { email: string; sessions: InboxSession[] }): Response {
   const rows = input.sessions.length
     ? input.sessions
         .map(
-          (session) => `<li>
-<span><strong>${escapeHtml(session.host)}</strong> ${escapeHtml(session.state)} ${escapeHtml(session.title)}
-<span class="muted">${escapeHtml(session.workspace)}</span></span>
+          (session) => `<article class="session">
+<div class="top">${pill(session.state)}<span class="muted">${escapeHtml(session.host)}</span></div>
+<p class="summary">${escapeHtml(session.summary || session.title)}</p>
 <form method="post" action="/reply">
   <input type="hidden" name="host" value="${escapeHtml(session.host)}">
   <input type="hidden" name="session_id" value="${escapeHtml(session.session_id)}">
-  <input type="text" name="text" placeholder="Next prompt" required>
+  <label>Reply <input type="text" name="text" placeholder="Tell the agent what to do next" required></label>
   <button type="submit">Send</button>
 </form>
-</li>`,
+</article>`,
         )
         .join("")
-    : "<p class=\"muted\">No open sessions yet.</p>";
+    : `<div class="card"><p>No agents yet. Pair a phone or add a machine, and the next finished turn will land here.</p><p><a class="button" href="/pair">Pair a device</a></p></div>`;
   return html(
     page(
       "Notaify",
-      `<h1>Waiting on you</h1>
-<p>${escapeHtml(input.email)} · <a href="/pair">Pairing</a> · <a href="/logout">Sign out</a></p>
-<p>A reply is delivered to that machine's Grok session as the next prompt.</p>
-<ul>${rows}</ul>`,
+      `<div class="nav"><span>${escapeHtml(input.email)}</span><a href="/pair">Pair</a><a href="/logout">Sign out</a></div>
+<h1>Waiting on you</h1>
+<p class="muted">Reply goes back to that machine as the agent's next prompt.</p>
+${rows}`,
     ),
   );
 }
@@ -303,9 +362,9 @@ export function joinPage(code: string): Response {
   const shown = code ? `<p class="code">${escapeHtml(code)}</p>` : "<p>This link has no code.</p>";
   return html(
     page(
-      "Grok Attention code",
-      `<h1>Enrollment code</h1>
-<p>Enter or scan this in the Grok Attention Mac app. This page does not enroll a device.</p>
+      "Notaify code",
+      `<h1>Phone code</h1>
+<p>Enter or scan this in the Notaify app. This page does not enroll a device.</p>
 ${shown}`,
     ),
   );

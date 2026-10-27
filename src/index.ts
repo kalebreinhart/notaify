@@ -9,6 +9,7 @@ import {
   html,
   inboxPage,
   joinPage,
+  landingPage,
   loginPage,
   machineLinkPage,
   machineLinkText,
@@ -1854,11 +1855,21 @@ export default {
     if (request.method === "OPTIONS") return json({ ok: true });
     const url = new URL(request.url);
     if (url.pathname === "/v1/health") return json({ ok: true });
+    if (url.pathname === "/login" && request.method === "GET") {
+      return loginPage({
+        failed: false,
+        providers: configuredProviders(env).map((provider) => ({ id: provider.id, label: provider.label })),
+      });
+    }
     if (!isHubPath(url.pathname)) return json({ error: "not found" }, 404);
     if (!env.ATTENTION_TOKEN) return json({ error: "token is not configured" }, 500);
     try {
       const stub = env.HUB.getByName("notaify");
-      return await stub.fetch(request);
+      const response = await stub.fetch(request);
+      if (url.pathname === "/" && response.status === 303 && (response.headers.get("Location") ?? "").startsWith("/login")) {
+        return landingPage();
+      }
+      return response;
     } catch (error) {
       console.error(JSON.stringify({ message: "worker request failed", error: String(error) }));
       return json({ error: "request failed" }, 500);
