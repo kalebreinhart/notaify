@@ -34,10 +34,24 @@ def active_for(workspace: str) -> dict[str, str]:
     return out
 
 
+def parse_options(values: list[str]) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for value in values:
+        label, _, description = value.partition("|")
+        label = " ".join(label.split())[:80]
+        if not label:
+            continue
+        options.append({"label": label, "description": " ".join(description.split())[:160]})
+        if len(options) == 6:
+            break
+    return options
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post a needs-you attention event")
     parser.add_argument("--title", required=True)
     parser.add_argument("--body", default="")
+    parser.add_argument("--option", action="append", default=[], help="Choice label, or 'Label | description'. Repeat up to 6.")
     parser.add_argument("--workspace", default="")
     parser.add_argument("--session", default="")
     parser.add_argument("--prompt", default="")
@@ -63,6 +77,7 @@ def main() -> int:
         "workspace": workspace,
         "title": title[:140],
         "body": args.body.strip()[:800],
+        "options": parse_options(args.option),
         "source": "agent",
         "dedupe_key": dedupe(host, session_id, prompt_id, "needs_user"),
     }

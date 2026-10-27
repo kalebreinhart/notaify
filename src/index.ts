@@ -39,6 +39,11 @@ type Urgency = "idle" | "attention";
 type Source = "hook" | "agent";
 type SessionState = "running" | "idle" | "needs_user" | "failed" | "ended";
 
+interface Choice {
+  label: string;
+  description: string;
+}
+
 interface AttentionEvent {
   id: string;
   at: string;
@@ -53,6 +58,7 @@ interface AttentionEvent {
   title: string;
   body: string;
   summary: string;
+  options: Choice[];
   source: Source;
   dedupe_key: string;
 }
@@ -65,6 +71,7 @@ interface SessionSnapshot {
   title: string;
   body: string;
   summary: string;
+  options: Choice[];
   hidden: boolean;
   kind: Kind;
   urgency: Urgency;
@@ -90,6 +97,7 @@ interface EventRow extends Record<string, SqlStorageValue> {
   dedupe_key: string | null;
   user_id: string | null;
   summary: string | null;
+  options: string | null;
 }
 
 type Access = "master" | "device" | "machine" | "pair" | "user" | "none";
@@ -152,6 +160,7 @@ interface SessionRow extends Record<string, SqlStorageValue> {
   updated_at: string;
   user_id: string | null;
   summary: string | null;
+  options: string | null;
   hidden: number | null;
 }
 
@@ -234,6 +243,29 @@ function defaultState(kind: Kind): SessionState {
   }
 }
 
+function parseOptions(value: unknown): Choice[] {
+  if (!Array.isArray(value)) return [];
+  const options: Choice[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const label = clip(record.label, 80);
+    if (!label) continue;
+    options.push({ label, description: clip(record.description, 160) });
+    if (options.length === 6) break;
+  }
+  return options;
+}
+
+function parseStoredOptions(value: string | null): Choice[] {
+  if (!value) return [];
+  try {
+    return parseOptions(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
 function deriveSummary(title: string, body: string): string {
   const cleaned = body
     .replace(/```[\s\S]*?```/g, " ")
@@ -292,6 +324,7 @@ function parseEvent(input: unknown): AttentionEvent | string {
     title,
     body: clip(raw.body, 800),
     summary: clip(raw.summary, 320) || deriveSummary(title, clip(raw.body, 800)),
+    options: kind === "needs_user" ? parseOptions(raw.options) : [],
     source,
     dedupe_key: clip(raw.dedupe_key, 200),
   };
@@ -312,6 +345,7 @@ function eventFromRow(row: EventRow): AttentionEvent {
     title: row.title,
     body: row.body,
     summary: row.summary || deriveSummary(row.title, row.body),
+    options: parseStoredOptions(row.options),
     source: row.source as Source,
     dedupe_key: row.dedupe_key ?? "",
   };
@@ -326,6 +360,7 @@ function sessionFromRow(row: SessionRow): SessionSnapshot {
     title: row.title,
     body: row.body,
     summary: row.summary || deriveSummary(row.title, row.body),
+    options: parseStoredOptions(row.options),
     hidden: row.hidden === 1,
     kind: row.kind as Kind,
     urgency: row.urgency as Urgency,
@@ -427,6 +462,8 @@ export class AttentionHub extends DurableObject<Env> {
       this.addColumn("ALTER TABLE events ADD COLUMN summary TEXT");
       this.addColumn("ALTER TABLE sessions ADD COLUMN summary TEXT");
       this.addColumn("ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+      this.addColumn("ALTER TABLE events ADD COLUMN options TEXT");
+      this.addColumn("ALTER TABLE sessions ADD COLUMN options TEXT");
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS backup_codes (
           user_id TEXT NOT NULL,
@@ -1522,8 +1559,8 @@ export class AttentionHub extends DurableObject<Env> {
 
     this.ctx.storage.sql.exec(
       `INSERT INTO events (
-        id, at, kind, urgency, state, sticky, host, session_id, prompt_id, workspace, title, body, summary, source, dedupe_key, user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, at, kind, urgency, state, sticky, host, session_id, prompt_id, workspace, title, body, summary, options, source, dedupe_key, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       event.id,
       event.at,
       event.kind,
@@ -1537,6 +1574,7 @@ export class AttentionHub extends DurableObject<Env> {
       event.title,
       event.body,
       event.summary,
+      event.options.length ? JSON.stringify(event.options) : null,
       event.source,
       event.dedupe_key || null,
       userId,
@@ -1593,14 +1631,15 @@ export class AttentionHub extends DurableObject<Env> {
     const workspace = event.workspace || current?.workspace || "";
     this.ctx.storage.sql.exec(
       `INSERT INTO sessions (
-        session_key, host, session_id, workspace, state, title, body, summary, kind, urgency, sticky, prompt_id, updated_at, user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        session_key, host, session_id, workspace, state, title, body, summary, options, kind, urgency, sticky, prompt_id, updated_at, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_key) DO UPDATE SET
         workspace = excluded.workspace,
         state = excluded.state,
         title = excluded.title,
         body = excluded.body,
         summary = excluded.summary,
+        options = excluded.options,
         hidden = CASE WHEN excluded.kind IN ('turn_started', 'needs_user') THEN 0 ELSE sessions.hidden END,
         kind = excluded.kind,
         urgency = excluded.urgency,
@@ -1616,6 +1655,7 @@ export class AttentionHub extends DurableObject<Env> {
       event.title,
       event.body,
       event.summary,
+      event.state === "needs_user" && event.options.length ? JSON.stringify(event.options) : null,
       event.kind,
       event.urgency,
       event.sticky ? 1 : 0,
@@ -1631,6 +1671,7 @@ export class AttentionHub extends DurableObject<Env> {
       title: event.title,
       body: event.body,
       summary: event.summary,
+      options: event.state === "needs_user" ? event.options : [],
       hidden: event.kind === "turn_started" || event.kind === "needs_user" ? false : current?.hidden === 1,
       kind: event.kind,
       urgency: event.urgency,
@@ -1864,7 +1905,7 @@ export default {
     if (!isHubPath(url.pathname)) return json({ error: "not found" }, 404);
     if (!env.ATTENTION_TOKEN) return json({ error: "token is not configured" }, 500);
     try {
-      const stub = env.HUB.getByName("notaify");
+      const stub = env.HUB.getByName("notaify-choices");
       const response = await stub.fetch(request);
       if (url.pathname === "/" && response.status === 303 && (response.headers.get("Location") ?? "").startsWith("/login")) {
         return landingPage();

@@ -102,12 +102,13 @@ class ClassifyTest(unittest.TestCase):
             envelope(
                 hookEventName="pre_tool_use",
                 toolName="ask_user_question",
-                toolInput={"questions": [{"question": "Ship the steel mount?"}]},
+                toolInput={"questions": [{"question": "Ship the steel mount?", "options": [{"label": "Yes", "description": "Print it"}]}]},
             ),
             "RB17",
         )
         assert event is not None
         self.assertEqual(event["title"], "Ship the steel mount?")
+        self.assertEqual(event["options"][0]["label"], "Yes")
         self.assertFalse(event["sticky"])
 
     def test_prompt_starts_running(self) -> None:

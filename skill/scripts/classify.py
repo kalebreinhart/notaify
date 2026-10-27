@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -111,16 +112,44 @@ def tool_name(event: dict[str, Any]) -> str:
     return snake(text_of(event, "toolName", "tool_name"))
 
 
-def question_text(event: dict[str, Any]) -> str:
+def tool_payload(event: dict[str, Any]) -> dict[str, Any]:
     payload = event.get("toolInput", event.get("tool_input"))
     if isinstance(payload, str):
-        return clip(payload, 240)
-    if isinstance(payload, dict):
-        questions = payload.get("questions")
-        if isinstance(questions, list) and questions:
-            first = questions[0]
-            if isinstance(first, dict) and isinstance(first.get("question"), str):
-                return clip(first["question"], 240)
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def question_options(event: dict[str, Any]) -> list[dict[str, str]]:
+    questions = tool_payload(event).get("questions")
+    if not isinstance(questions, list) or not questions or not isinstance(questions[0], dict):
+        return []
+    raw = questions[0].get("options")
+    if not isinstance(raw, list):
+        return []
+    options: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        label = clip(str(item.get("label") or ""), 80)
+        if not label:
+            continue
+        options.append({"label": label, "description": clip(str(item.get("description") or ""), 160)})
+        if len(options) == 6:
+            break
+    return options
+
+
+def question_text(event: dict[str, Any]) -> str:
+    payload = tool_payload(event)
+    questions = payload.get("questions")
+    if isinstance(questions, list) and questions and isinstance(questions[0], dict):
+        question = questions[0].get("question")
+        if isinstance(question, str) and question.strip():
+            return clip(question, 240)
     return "Grok asked a question"
 
 
@@ -194,6 +223,7 @@ def classify(event: dict[str, Any], host: str) -> dict[str, Any] | None:
             "sticky": False,
             "title": first_line(question, "Question"),
             "body": question,
+            "options": question_options(event),
             "dedupe_key": dedupe(host, session_id, prompt_id, "ask", digest(question)),
         }
 

@@ -23,15 +23,19 @@ Run this before your final message when the turn is blocked on the user and your
 - You are at a design fork and will not pick for them.
 - You are asking a blocking question in prose.
 
+When you are offering a choice, send the same options you show in the chat. Repeat `--option` once per choice, at most six. Use `Label | short description` when a label is not enough. The person can tap an option in Notaify or type their own reply.
+
 ```bash
 python3 ~/.grok/skills/grok-attention/scripts/notify.py \
-  --title "Log in to Cloudflare" \
-  --body "The browser is waiting on the personal account."
+  --title "Which mount?" \
+  --body "The shelf can hang two ways." \
+  --option "Steel bracket | Bolts to the wall" \
+  --option "Printed clip"
 ```
 
-`--title` is one short line. `--body` is one or two sentences. The command prints `attention: ok` or `attention: not delivered` and exits 0. Still ask the user in your reply.
+`--title` is one short line. `--body` is one or two sentences. The command prints `attention: ok` or `attention: not delivered` and exits 0. Still ask the user in your reply, with the same options.
 
-Skip `notify.py` when this turn already called `ask_user_question`, or when the final message asks them to log in, sign in, choose, or ends in a question. The hook flags those.
+Skip `notify.py` when this turn already called `ask_user_question`. That tool's options are sent by the hook. Also skip it when the final message only asks them to log in or ends in a question and there are no choices to tap.
 
 Do not post for ordinary progress or a finished task.
 

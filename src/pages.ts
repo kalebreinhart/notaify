@@ -63,6 +63,9 @@ function page(title: string, body: string): string {
   .pill.working { background: #d9efe3; color: #145c38; }
   .pill.failed { background: #f8d4d0; color: #8d2418; }
   .summary { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 1.2rem; line-height: 1.35; margin: 0.7rem 0; }
+  .options { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .options form { margin: 0; }
+  .options button { background: #fff; color: var(--ink); border: 1px solid var(--ink); }
   .qr, .qr-frame { width: min(100%, 240px); margin: 0.5rem auto; }
   .qr svg, .qr-frame svg { width: 100%; height: auto; display: block; background: #fff; }
   .qr-frame { padding: 14px; background: #fff; border-radius: 22px; border: 1px solid var(--line); }
@@ -317,6 +320,22 @@ export interface InboxSession {
   state: string;
   title: string;
   summary?: string;
+  options?: { label: string; description: string }[];
+}
+
+function optionButtons(session: InboxSession): string {
+  const options = session.options ?? [];
+  if (!options.length) return "";
+  return `<div class="options">${options
+    .map(
+      (option) => `<form method="post" action="/reply">
+<input type="hidden" name="host" value="${escapeHtml(session.host)}">
+<input type="hidden" name="session_id" value="${escapeHtml(session.session_id)}">
+<input type="hidden" name="text" value="${escapeHtml(option.label)}">
+<button type="submit" title="${escapeHtml(option.description)}">${escapeHtml(option.label)}</button>
+</form>`,
+    )
+    .join("")}</div>`;
 }
 
 function pill(state: string): string {
@@ -337,6 +356,7 @@ export function inboxPage(input: { email: string; sessions: InboxSession[] }): R
           (session) => `<article class="session">
 <div class="top">${pill(session.state)}<span class="muted">${escapeHtml(session.host)}</span></div>
 <p class="summary">${escapeHtml(session.summary || session.title)}</p>
+${optionButtons(session)}
 <form method="post" action="/reply">
   <input type="hidden" name="host" value="${escapeHtml(session.host)}">
   <input type="hidden" name="session_id" value="${escapeHtml(session.session_id)}">
