@@ -48,6 +48,27 @@ The next `turn_started` clears a sticky ask. Subagent turns are not reported.
 
 An agent can also post a sticky `needs_user` with `skill/scripts/notify.py` when it is blocked on you and the final message will not say so.
 
+## iPhone and Android
+
+Sign in on the web, then open [notaify.com/app](https://notaify.com/app). That page makes a link like `https://notaify.com/a/<code>`. Open it on the phone and tap **Open in the Notaify app**. The tap goes to `notaify://join?code=<code>`. Opening the page does not use the code. The code lasts 30 minutes and works once.
+
+The app reads `code` from that URL, or from `https://notaify.com/join?code=<code>`, and exchanges it. It does not see the account password or the bus token.
+
+```
+POST /v1/enroll
+{"code":"<one-time>","name":"iPhone"}
+```
+
+No auth on that call. Response, once:
+
+```json
+{"ok":true,"device_id":"...","device_token":"gat_...","url":"https://notaify.com"}
+```
+
+Store `device_token` in the keychain and send it as the bearer. Register the `notaify` URL scheme, and associated domains for `https://notaify.com/a/` and `https://notaify.com/join` when the app id is known. A second redeem of the same code returns 410.
+
+The older QR on `/pair` still works. It expires in 3 minutes. The phone link is the one to send.
+
 ## Mac app
 
 Menu-bar client. One WebSocket. Group rows by `host`. Pin `needs_user` and `failed`. Toast `needs_user`, `turn_failed`, and `turn_ended`. Do not toast `turn_started`. Hide `ended` sessions from the board; keep them in the event list.

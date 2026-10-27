@@ -9,8 +9,10 @@ import {
   html,
   inboxPage,
   joinPage,
+  appLinkPage,
   crewPage,
   enrollPage,
+  openAppPage,
   enrollReadyPage,
   landingPage,
   machineReadyPage,
@@ -452,6 +454,7 @@ export class AttentionHub extends DurableObject<Env> {
         )
       `);
       this.addColumn("ALTER TABLE pair_sessions ADD COLUMN current_machine_code TEXT");
+      this.addColumn("ALTER TABLE pair_sessions ADD COLUMN current_app_code TEXT");
       this.addColumn("ALTER TABLE pairing_codes ADD COLUMN kind TEXT NOT NULL DEFAULT 'reader'");
       this.addColumn("ALTER TABLE devices ADD COLUMN role TEXT NOT NULL DEFAULT 'reader'");
       this.addColumn("ALTER TABLE devices ADD COLUMN user_id TEXT");
@@ -675,6 +678,8 @@ export class AttentionHub extends DurableObject<Env> {
       if (url.pathname === "/v1/auth/code" && request.method === "POST") return this.loginCodeJson(request);
       if (url.pathname === "/v1/replies" && request.method === "POST") return this.postReply(request, principal);
       if (url.pathname === "/v1/replies/claim" && request.method === "POST") return this.claimReply(request, principal);
+      if (url.pathname === "/app" && request.method === "GET") return this.showApp(request, url, principal);
+      if (url.pathname === "/v1/app-link" && request.method === "POST") return this.mintAppJson(request, url, principal);
       if (url.pathname === "/pair" && request.method === "GET") return this.showPair(request, url, principal);
       if (url.pathname === "/pair/unlock" && request.method === "POST") return this.unlock(request);
       if (url.pathname === "/pair/revoke" && request.method === "POST") return await this.revokeFromPage(request, principal);
@@ -798,6 +803,83 @@ export class AttentionHub extends DurableObject<Env> {
       machineExpiresAt: machine.expiresAt,
       devices: this.enrolledDevices(principal.userId),
     });
+  }
+
+  private showApp(request: Request, url: URL, principal: Principal): Response {
+    if (!canAdmin(principal)) return redirectLogin("/app");
+    const sessionId = this.pairingKey(request, principal);
+    this.ensurePairSession(sessionId);
+    const link =
+      url.searchParams.get("new") === "1"
+        ? this.mintAppLink(sessionId, principal.userId)
+        : (this.currentAppLink(sessionId) ?? this.mintAppLink(sessionId, principal.userId));
+    const magic = `${url.origin}/a/${link.code}`;
+    return appLinkPage({
+      url: magic,
+      openUrl: appOpenUrl(link.code),
+      expiresAt: link.expiresAt,
+      qr: qrSvg(magic),
+      devices: this.enrolledDevices(principal.userId),
+    });
+  }
+
+  private mintAppJson(request: Request, url: URL, principal: Principal): Response {
+    if (principal.kind !== "user" && principal.kind !== "master") return json({ error: "unauthorized" }, 401);
+    const sessionId = this.pairingKey(request, principal);
+    this.ensurePairSession(sessionId);
+    const link = this.mintAppLink(sessionId, principal.userId);
+    return json({
+      ok: true,
+      url: `${url.origin}/a/${link.code}`,
+      open_url: appOpenUrl(link.code),
+      code: link.code,
+      expires_at: link.expiresAt,
+    });
+  }
+
+  private currentAppLink(sessionId: string): { code: string; expiresAt: string } | null {
+    const rows = this.ctx.storage.sql
+      .exec<{ current_app_code: string | null } & Record<string, SqlStorageValue>>(
+        "SELECT current_app_code FROM pair_sessions WHERE id = ?",
+        sessionId,
+      )
+      .toArray();
+    const code = rows[0]?.current_app_code ?? "";
+    if (!code) return null;
+    const found = this.ctx.storage.sql
+      .exec<CodeRow>("SELECT code, expires_at, used_at FROM pairing_codes WHERE code = ? AND kind = 'reader'", code)
+      .toArray();
+    const row = found[0];
+    if (!row || row.used_at || row.expires_at <= new Date().toISOString()) return null;
+    return { code: row.code, expiresAt: row.expires_at };
+  }
+
+  private mintAppLink(sessionId: string, userId: string): { code: string; expiresAt: string } {
+    const now = new Date().toISOString();
+    const existing = this.ctx.storage.sql
+      .exec<{ current_app_code: string | null } & Record<string, SqlStorageValue>>(
+        "SELECT current_app_code FROM pair_sessions WHERE id = ?",
+        sessionId,
+      )
+      .toArray();
+    const previous = existing[0]?.current_app_code ?? "";
+    if (previous) {
+      this.ctx.storage.sql.exec(
+        "UPDATE pairing_codes SET used_at = ? WHERE code = ? AND used_at IS NULL",
+        now,
+        previous,
+      );
+    }
+    const code = randomToken(18);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    this.ctx.storage.sql.exec(
+      "INSERT INTO pairing_codes (code, expires_at, used_at, kind, user_id) VALUES (?, ?, NULL, 'reader', ?)",
+      code,
+      expiresAt,
+      userId,
+    );
+    this.ctx.storage.sql.exec("UPDATE pair_sessions SET current_app_code = ? WHERE id = ?", code, sessionId);
+    return { code, expiresAt };
   }
 
   private async unlock(request: Request): Promise<Response> {
@@ -1002,6 +1084,7 @@ export class AttentionHub extends DurableObject<Env> {
     );
     if (claimed.rowsWritten !== 1) return json({ error: "code expired or already used" }, 410);
     this.ctx.storage.sql.exec("UPDATE pair_sessions SET current_code = NULL WHERE current_code = ?", code);
+    this.ctx.storage.sql.exec("UPDATE pair_sessions SET current_app_code = NULL WHERE current_app_code = ?", code);
     const id = crypto.randomUUID();
     const deviceToken = `gat_${randomToken(32)}`;
     const name = cleanName(body.name);
@@ -1691,7 +1774,7 @@ export class AttentionHub extends DurableObject<Env> {
       return failed();
     }
     this.clearFailures(email);
-    return this.startLogin(user.id, Boolean(user.totp_secret), url);
+    return this.startLogin(user.id, Boolean(user.totp_secret), url, safeNext(readCookie(request, "ga_next")));
   }
 
   private showPairingCode(request: Request): Response {
@@ -1747,10 +1830,12 @@ export class AttentionHub extends DurableObject<Env> {
       expires,
       session.id,
     );
-    return new Response(null, {
-      status: 303,
-      headers: { Location: "/", "Set-Cookie": authCookie(session.id, 14 * 24 * 60 * 60), "Cache-Control": "no-store" },
-    });
+    const headers = new Headers();
+    headers.set("Location", safeNext(readCookie(request, "ga_next")) || "/");
+    headers.set("Cache-Control", "no-store");
+    headers.append("Set-Cookie", authCookie(session.id, 14 * 24 * 60 * 60));
+    headers.append("Set-Cookie", "ga_next=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0");
+    return new Response(null, { status: 303, headers });
   }
 
   private logout(request: Request): Response {
@@ -1762,7 +1847,7 @@ export class AttentionHub extends DurableObject<Env> {
     });
   }
 
-  private startLogin(userId: string, needsCode: boolean, url: URL): Response {
+  private startLogin(userId: string, needsCode: boolean, url: URL, preferred = ""): Response {
     const id = randomToken(32);
     const ttlMs = needsCode ? 10 * 60 * 1000 : 14 * 24 * 60 * 60 * 1000;
     const expires = new Date(Date.now() + ttlMs).toISOString();
@@ -1773,8 +1858,8 @@ export class AttentionHub extends DurableObject<Env> {
       needsCode ? "pending_2fa" : "full",
       expires,
     );
-    const next = url.searchParams.get("next");
-    const location = needsCode ? "/login/code" : next && next.startsWith("/") ? next : "/";
+    const next = safeNext(url.searchParams.get("next") ?? "") || safeNext(preferred);
+    const location = needsCode ? "/login/code" : next || "/";
     return new Response(null, {
       status: 303,
       headers: {
@@ -2307,11 +2392,14 @@ function isHubPath(pathname: string): boolean {
     pathname === "/login/show-code" ||
     pathname === "/logout" ||
     pathname === "/reply" ||
+    pathname === "/app" ||
     pathname === "/pair" ||
     pathname === "/pair/unlock" ||
     pathname === "/pair/revoke" ||
     pathname === "/join" ||
     /^\/m\/[A-Za-z0-9_-]{16,64}(\/install)?$/.test(pathname) ||
+    /^\/a\/[A-Za-z0-9_-]{16,64}$/.test(pathname) ||
+    pathname === "/v1/app-link" ||
     pathname === "/v1/enroll" ||
     pathname === "/v1/pairings" ||
     pathname === "/v1/pairings/current" ||
@@ -2408,6 +2496,23 @@ function parseStringList(value: string): string[] {
   }
 }
 
+function appOpenUrl(code: string): string {
+  return `notaify://join?code=${encodeURIComponent(code)}`;
+}
+
+function redirectLogin(next: string): Response {
+  const headers = new Headers();
+  headers.set("Location", "/login");
+  headers.set("Cache-Control", "no-store");
+  headers.set("Set-Cookie", `ga_next=${next}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
+  return new Response(null, { status: 303, headers });
+}
+
+function safeNext(value: string): string {
+  if (value === "/app" || value === "/pair" || value === "/crew") return value;
+  return "";
+}
+
 function cleanName(value: unknown): string {
   const text = clip(typeof value === "string" ? value : "Mac", 80).replace(/[\u0000-\u001f]/g, "").trim();
   return text || "Mac";
@@ -2426,6 +2531,14 @@ export default {
     if (url.pathname === "/v1/health") return json({ ok: true });
     if (url.pathname === "/enroll" && request.method === "GET") return enrollPage("");
     if (url.pathname === "/crew" && request.method === "GET") return crewPage("");
+    const appLink = /^\/a\/([A-Za-z0-9_-]{16,64})$/.exec(url.pathname);
+    if (appLink && request.method === "GET") {
+      return openAppPage({
+        code: appLink[1],
+        openUrl: appOpenUrl(appLink[1]),
+        expiresHint: "The link works once. If it has expired, make a new one while signed in at notaify.com/app.",
+      });
+    }
     if (url.pathname === "/login" && request.method === "GET") {
       return loginPage({
         failed: false,
@@ -2435,7 +2548,7 @@ export default {
     if (!isHubPath(url.pathname)) return json({ error: "not found" }, 404);
     if (!env.ATTENTION_TOKEN) return json({ error: "token is not configured" }, 500);
     try {
-      const stub = env.HUB.getByName("notaify-crew");
+      const stub = env.HUB.getByName("notaify-app");
       const response = await stub.fetch(request);
       if (url.pathname === "/" && response.status === 303 && (response.headers.get("Location") ?? "").startsWith("/login")) {
         return landingPage();

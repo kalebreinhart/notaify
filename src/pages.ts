@@ -166,7 +166,8 @@ export function pairPage(input: {
     page(
       "Pair a device",
       `<h1>Pair a phone</h1>
-<p>Scan this with the Notaify app on iPhone or Android. The code works once. Opening it in a browser does not enroll the phone.</p>
+<p>The easy way is <a href="/app">Add a phone</a>. That page gives you a link. Open it on the phone and tap Open in the Notaify app.</p>
+<p>Or scan this with the Notaify app. The code works once. Opening it in a browser does not enroll the phone.</p>
 <div class="qr">${input.qr}</div>
 <p class="code">${escapeHtml(input.payload)}</p>
 <p class="muted">Expires <time datetime="${escapeHtml(input.expiresAt)}">${escapeHtml(input.expiresAt)}</time>. <a href="/pair?new=1">New QR code</a></p>
@@ -398,7 +399,7 @@ ${optionButtons(session)}
   return html(
     page(
       "Notaify",
-      `<div class="nav"><span>${escapeHtml(input.email)}</span><a href="/crew">Crew</a><a href="/pair">Pair</a><a href="/logout">Sign out</a></div>
+      `<div class="nav"><span>${escapeHtml(input.email)}</span><a href="/app">Phone</a><a href="/crew">Crew</a><a href="/pair">Pair</a><a href="/logout">Sign out</a></div>
 <h1>Waiting on you</h1>
 <p class="muted">Reply goes back to that machine as the agent's next prompt.</p>
 ${rows}`,
@@ -500,6 +501,61 @@ export function machineReadyPage(input: { project: string; agent: string; comman
 <p>Run this once on that computer. It installs the Notaify connector and starts listening for jobs. Use this same project name when you enroll the next machine.</p>
 <div class="card"><pre>${escapeHtml(input.command)}</pre></div>
 <p><a class="button" href="/crew">Add another agent</a></p>`,
+    ),
+  );
+}
+
+export function appLinkPage(input: {
+  url: string;
+  openUrl: string;
+  expiresAt: string;
+  qr: string;
+  devices: DeviceRowView[];
+}): Response {
+  const devices = input.devices.length
+    ? `<ul class="devices">${input.devices
+        .map((device) => {
+          const kind = device.role === "publisher" ? "machine" : "app";
+          return `<li><span>${escapeHtml(device.name)} <span class="muted">${kind} ${escapeHtml(device.created_at)}</span></span>
+<form method="post" action="/pair/revoke"><input type="hidden" name="id" value="${escapeHtml(device.id)}"><button type="submit">Revoke</button></form></li>`;
+        })
+        .join("")}</ul>`
+    : `<p class="muted">No phones or computers are signed in yet.</p>`;
+  return html(
+    page(
+      "Add a phone",
+      `<p class="eyebrow">This account</p>
+<h1>Add a phone.</h1>
+<p class="lede">Open this link on the iPhone or Android phone. Tap Open in the Notaify app. The app signs in to this account. Opening the link does not use it up.</p>
+<div class="card">
+<p><a class="button" href="${escapeHtml(input.openUrl)}">Open in the Notaify app</a></p>
+<p class="code" id="magic">${escapeHtml(input.url)}</p>
+<p><button type="button" class="ghost" id="copy">Copy link</button> <a href="/app?new=1">New link</a></p>
+<p class="muted">Good until <time datetime="${escapeHtml(input.expiresAt)}">${escapeHtml(input.expiresAt)}</time>. The app can use it once.</p>
+<div class="qr">${input.qr}</div>
+</div>
+<h2>Signed in</h2>
+${devices}
+<script>
+document.getElementById("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(document.getElementById("magic").textContent); } catch (_) {}
+};
+</script>`,
+    ),
+  );
+}
+
+export function openAppPage(input: { openUrl: string; code: string; expiresHint: string }): Response {
+  return html(
+    page(
+      "Open Notaify",
+      `<p class="eyebrow">Sign this phone in</p>
+<h1>Open the Notaify app.</h1>
+<p class="lede">One tap signs this phone into the account that made the link. The app trades this code for its own credential. This page does not sign the phone in by itself.</p>
+<p><a class="button" href="${escapeHtml(input.openUrl)}">Open in the Notaify app</a></p>
+<p class="muted">Nothing opened? Install Notaify, come back to this page, and tap again. Or paste this code into the app.</p>
+<p class="code">${escapeHtml(input.code)}</p>
+<p class="muted">${escapeHtml(input.expiresHint)}</p>`,
     ),
   );
 }
